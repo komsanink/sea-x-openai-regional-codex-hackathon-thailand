@@ -475,7 +475,7 @@ export function drawMap(days, routes, open, before, focusedStop, draft, overview
       container.replaceChildren();
       const dark = matchMedia('(prefers-color-scheme: dark)');
       const style = () => 'https://tiles.openfreemap.org/styles/' + (dark.matches ? 'dark' : 'positron');
-      const center = pending.center || coordinates(pending.days.find((day) => day?.stops?.length)?.stops[0]?.ll);
+      const center = pending.center || pending.days.flatMap(day => day?.stops || []).map(visitCoordinates).find(Boolean);
       map = new lib.Map({ container, style: style(), center: center || [0, 18], zoom: center ? 11 : 1.5, scrollZoom: false });
       const sizeChanges = new ResizeObserver(scheduleCamera);
       for (const target of [container, document.querySelector('#place-panel'), document.querySelector('#chat-response')])
