@@ -484,8 +484,7 @@ test('candidate discovery uses verified search URLs, a matched preview and remem
   let summary;
   const result = await candidates(setup, { ...context(), step: (s) => (summary = s) });
   const option = result.questions[0].options[0];
-  assert.equal(requests.length, 2);
-  assert.deepEqual(requests.map(call => call.max_tool_calls), [3, 2]);
+  assert.deepEqual(requests.map(call => call.max_tool_calls), [2, 1, 2]);
   assert.ok(!requests[0].input[0].content.includes('do-not-send'));
   assert.ok(requests[0].input[0].content.includes('กุ้ง'));
   assert.equal(option.photo.match, 'likely');
@@ -582,7 +581,7 @@ test('tops up sparse London choices once, with distinct supported places and app
       const body = JSON.parse(init.body);
       const data = JSON.parse(body.input[0].content.split('ข้อมูล JSON:\n')[1]);
       assert.equal(body.text.format.name, 'bop_candidates');
-      rounds.push({ data, budget: body.max_tool_calls });
+      rounds.push({ data, budget: body.max_tool_calls, tokens: body.max_output_tokens });
       const kinds = data.categories;
       const full = mode === 'full';
       if (data.gaps && mode === 'fail') return Response.json({ error: { code: 'invalid_api_key' } }, { status: 401 });
@@ -615,11 +614,14 @@ test('tops up sparse London choices once, with distinct supported places and app
   ]) {
     mode = 'sparse'; rounds = [];
     const result = await candidates(normalize({ ...base, days, stay }), context());
-    assert.deepEqual(rounds.map(round => round.budget), [3,2]);
-    assert.deepEqual(rounds[0].data.categories, expected);
-    assert.deepEqual(rounds[1].data.gaps.map(g => g.needed), expected.map(k => k === 'food' ? 2 : 3));
-    assert.ok(rounds[1].data.existing.includes(places.food[0]));
-    assert.equal(rounds[1].data.restrictions[0].avoid, 'กุ้ง');
+    const first = rounds.slice(0, -1), followup = rounds.at(-1);
+    assert.deepEqual(first.map(round => round.data.categories), expected.map(kind => [kind]));
+    assert.equal(first.reduce((sum, round) => sum + round.budget, 0), 3);
+    assert.equal(first.reduce((sum, round) => sum + round.tokens, 0), 8000);
+    assert.equal(followup.budget, 2);
+    assert.deepEqual(followup.data.gaps.map(g => g.needed), expected.map(k => k === 'food' ? 2 : 3));
+    assert.ok(followup.data.existing.includes(places.food[0]));
+    assert.equal(followup.data.restrictions[0].avoid, 'กุ้ง');
     assert.deepEqual(result.questions.map(q => q.kind), expected);
     const all = result.questions.flatMap(q => q.options);
     assert.equal(new Set(all.map(o => o.id)).size, all.length);
@@ -654,7 +656,7 @@ test('tops up sparse London choices once, with distinct supported places and app
   for (const scenario of ['full','fail']) {
     mode = scenario; rounds = [];
     const { questions } = await candidates(normalize({ ...base, days: 1 }), context());
-    assert.equal(rounds.length, mode === 'full' ? 1 : 2);
+    assert.equal(rounds.length, mode === 'full' ? 2 : 3);
     assert.deepEqual(questions.map(q => q.options.length), mode === 'full' ? [4,4] : [2,1]);
   }
   const setup = normalize({ ...base, days: 1 });

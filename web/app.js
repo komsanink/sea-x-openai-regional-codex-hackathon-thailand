@@ -999,7 +999,10 @@ function restoreForm(setup, flags) {
   setupForm.elements.autonomy.value = setup.autonomy === 'ask' ? 'ask' : 'auto';
   setupForm.endDate.min = setup.startDate;
   setupForm.hasCar.checked = Boolean(setup.hasCar);
-  setupForm.stayMode.value = setup.stay?.mode === 'booked' ? 'booked' : 'auto';
+  const savedStays = setup.stay?.stays?.length ? setup.stay.stays
+    : setup.stay?.name ? [{ ...setup.stay, nights: tripLength() - 1 }] : [];
+  const booked = setup.stay?.mode === 'booked' || (!setup.stay?.mode && savedStays.some(stay => stay?.name?.trim()));
+  setupForm.stayMode.value = booked ? 'booked' : 'auto';
   if (setup.cityLL) lookupCache.set(setup.city, {
     name: setup.city, ll: setup.cityLL, cc: setup.country, currency: setup.currency, airport: setup.cityAirport,
   });
@@ -1015,7 +1018,7 @@ function restoreForm(setup, flags) {
   }
   if (!$('#members').children.length) addMember();
   $('#stay-rows').replaceChildren();
-  for (const stay of setup.stay?.stays || []) {
+  for (const stay of booked ? savedStays : []) {
     const input = addStay(stay.nights).querySelector('[name=stayName]');
     input.value = stay.name;
     if (stay.ll) selectedLocations.set(input, { name: stay.name, ll: stay.ll });

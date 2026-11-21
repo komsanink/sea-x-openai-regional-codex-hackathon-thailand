@@ -162,7 +162,7 @@ test('candidate selection, short design and targeted repair use the real adapter
   setup.picks = { must: [discovery.questions[0].options[0]], avoid: [] };
   const events = [];
   const planned = await planTrip(setup, { ...ctx(), emit: event => events.push(event.type) });
-  assert.deepEqual(seen, ['candidates', 'candidates', 'design', 'repair']);
+  assert.deepEqual(seen, ['candidates', 'candidates', 'candidates', 'design', 'repair']);
   assert.equal(planned.repaired, true);
   const outcome = planned.plan.repairOutcome;
   assert.equal(outcome.status, 'applied');

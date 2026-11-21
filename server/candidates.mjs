@@ -5,7 +5,7 @@ import { hotelOptions, isHotelCandidate } from './lodging.mjs';
 import { model, provider } from './model.mjs';
 import { operationalStore } from './operation-store.mjs';
 import { catalogPlace } from './sample.mjs';
-import { containsName, exactPhoto, namesVenue, nearbyPhoto, pagePhoto, previewFromHead, publicPage, readPublicDocument } from './photos.mjs';
+import { containsName, exactPhoto, hotelPageDetails, namesVenue, nearbyPhoto, pagePhoto, publicPage, readPublicDocument } from './photos.mjs';
 import { boundedStrings, httpsUrl, list, placeText, sourceIdentity } from './place-text.mjs';
 
 const memory = new Map();
@@ -195,12 +195,25 @@ async function discoverQuestions(discovery, restrictions, ctx, refresh, batch) {
     await confirmSurveyHotels(fresh, discovery, ctx, batch);
     return fresh.filter(question => question.options.length);
   }
-  const result = await model(prompt, input, { ...ctx, operation: 'candidates', searches: 3 });
+  // API providers enforce search and output limits per response. Split the same
+  // initial budget across the relevant categories. The CLI has only a turn limit.
+  const jobs = ['openai', 'anthropic'].includes(provider) ? categories.map(kind => [kind]) : [categories];
+  const share = (total, index) => Math.floor(total / jobs.length) + Number(index < total % jobs.length);
   const runId = ++run;
   const ids = new Set();
+  const rounds = await Promise.allSettled(jobs.map(async (kinds, index) => {
+    const result = await model(prompt, { ...input, categories: kinds }, {
+      ...ctx, operation: 'candidates', searches: share(3, index), maxOutputTokens: share(8000, index),
+    });
+    const found = [];
+    combineQuestions(found, normalizeQuestions(result, runId, ids, discovery), kinds);
+    await confirmSurveyHotels(found, discovery, ctx, batch);
+    return found;
+  }));
+  ctx.signal.throwIfAborted();
+  if (rounds.every(round => round.status === 'rejected')) throw rounds[0].reason;
   const questions = [];
-  combineQuestions(questions, normalizeQuestions(result, runId, ids, discovery), categories);
-  await confirmSurveyHotels(questions, discovery, ctx, batch);
+  for (const round of rounds) if (round.status === 'fulfilled') combineQuestions(questions, round.value, categories);
   const target = 4;
   const gaps = categories.map(kind => {
     const found = questions.find(q => q.kind === kind)?.options.length || 0;
@@ -242,7 +255,7 @@ async function photoStage(items, width, timeout, ctx, work) {
     if (signal.aborted || entry.option.photo) return;
     try {
       const photo = await work(entry, signal);
-      if (!signal.aborted && photo && (entry.option.kind !== 'hotel' || hotelPhoto(photo))) {
+      if (!signal.aborted && photo) {
         const { url, thumb, credit, page, match } = photo;
         entry.option.photo = { url, ...(thumb ? { thumb } : {}), credit, page, match };
       }
@@ -263,9 +276,6 @@ async function firstPass(entry, signal) {
   signal.throwIfAborted();
   return exact || previews.find(Boolean) || null;
 }
-function hotelPhoto(photo) {
-  return !/(?:[/_.-])(?:og[-_]?image|social[-_]?(?:card|share)|facebook-twitter)(?:[./?&_-]|$)/i.test(photo.url);
-}
 async function locateSurveyHotel(entry, setup, ctx, batch) {
   const { option, stop } = entry;
   const url = publicPage(option.src.url);
@@ -273,24 +283,21 @@ async function locateSurveyHotel(entry, setup, ctx, batch) {
   const venue = { name: option.name, kind: 'hotel', query: option.query };
   const [ll, doc] = await Promise.all([
     findSavedVenue(venue, stop.ll || setup.cityLL, ctx.signal, batch),
-    readPublicDocument(url, ctx.signal),
+    readPublicDocument(url, ctx.signal, {headOnly:false}),
   ]);
   // A hotel-named POI or a property page must support the branch, even if a search cited a neighborhood guide.
   const title = doc?.text.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1] || '';
   const identity = { name: option.name, aliases: stop.aliases.filter(alias => alias.length > 3 && alias !== setup.city && alias !== setup.hotelArea) };
-  const identifiesProperty = namesVenue(doc?.text || '', doc?.page || url, identity) &&
+  const details = doc ? hotelPageDetails(doc.text, doc.page, identity) : {};
+  const identifiesProperty = details.named || namesVenue(doc?.text || '', doc?.page || url, identity) &&
     (isHotelCandidate({name: option.name}, setup) ||
       (containsName(title, identity) && /hotel|resort|hostel|โรงแรม|ที่พัก|check[ -]?in|guest rooms/i.test(doc?.text || '') &&
-        !/hotels\s+(?:in|near)|โรงแรม(?:ใน|ใกล้)/i.test(title)) ||
-      /"@type"\s*:\s*"(?:Hotel|Resort|Hostel|LodgingBusiness)"/i.test(doc?.text || ''));
+        !/hotels\s+(?:in|near)|โรงแรม(?:ใน|ใกล้)/i.test(title)));
   if (!ll && !identifiesProperty) return;
-  const [hotel] = hotelOptions([{ ...option, ...option.src, ll: ll || stop.ll }], setup);
+  const [hotel] = hotelOptions([{ ...option, ...option.src, ll: details.ll || ll || stop.ll }], setup);
   if (!hotel) return;
   option.ll = hotel.ll;
-  if (doc) {
-    const photo = previewFromHead(doc.text, doc.page, identity);
-    if (photo && hotelPhoto(photo)) option.photo = photo;
-  }
+  if (details.photo) option.photo = details.photo;
 }
 export async function candidates(setup, ctx, refresh) {
   const started = performance.now();
@@ -305,6 +312,7 @@ export async function candidates(setup, ctx, refresh) {
   const batch = { remaining: 8 };
   const questions = await discoverQuestions(discovery, restrictions, ctx, refresh, batch);
   const items = questions.flatMap((q) => q.options);
+  const hotels = items.filter(entry => entry.option.kind === 'hotel');
   const nonHotels = items.filter(entry => entry.option.kind !== 'hotel');
   const offline = provider === 'fake';
   await Promise.all([
@@ -325,14 +333,12 @@ export async function candidates(setup, ctx, refresh) {
       if (coordinates(point ?? hint)) entry.option.ll = point ?? hint;
     }),
     offline ? undefined : photoStage(nonHotels, nonHotels.length, 15_000, ctx, firstPass),
+    offline ? undefined : photoStage(hotels, hotels.length, 6500, ctx,
+      (entry, signal) => exactPhoto({ ...entry.stop, ll: entry.option.ll }, signal)),
   ]);
   for (const entry of items) entry.stop.ll = entry.option.ll;
   if (!offline) {
-    const hotels = items.filter(entry => entry.option.kind === 'hotel');
-    await Promise.all([
-      photoStage(hotels, hotels.length, 6500, ctx, (entry, signal) => exactPhoto(entry.stop, signal)),
-      photoStage(nonHotels, nonHotels.length, 10_000, ctx, (entry, signal) => nearbyPhoto(entry.stop, signal)),
-    ]);
+    await photoStage(nonHotels, nonHotels.length, 10_000, ctx, (entry, signal) => nearbyPhoto(entry.stop, signal));
     await photoStage(items, 6, 60_000, ctx, async (entry, signal) => {
       const result = await model(
         'ค้นเพียงหนึ่งครั้ง หา URL หน้าเว็บที่มีรูปของสถานที่ตรงชื่อและสาขา สำหรับที่พักใช้รูปของโรงแรมสาขานั้น คืน pages เป็น URL ของหน้าที่ค้นเจอ',

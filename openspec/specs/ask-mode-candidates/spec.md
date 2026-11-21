@@ -7,9 +7,14 @@ Ask mode collects group preferences before itinerary design. The candidate servi
 ## Requirements
 
 ### Requirement: Candidates request
-`POST /api/plan/candidates` SHALL accept `{ setup }`, use at most five web searches across the first discovery call (up to three) and an optional supplementary call (up to two), and end with `done.questions` of at most 3 questions `{ id, kind: 'food'|'sight'|'stay', title, multi: boolean, options }` with at most 6 options each.
+`POST /api/plan/candidates` SHALL accept `{ setup }`, split up to three initial web searches among the eligible categories and allow up to two searches in one supplementary call, and end with `done.questions` of at most 3 questions `{ id, kind: 'food'|'sight'|'stay', title, multi: boolean, options }` with at most 6 options each.
 
 Discovery SHALL aim for four distinct places per relevant question and can offer up to six. Restaurants and sights are alternatives even on a one-day trip. On an overnight trip with accommodation left to Bop, the first available question offers named hotels. Food and sightseeing follow in the same survey. A booked stay or a day trip omits the hotel question. The options SHALL respect dates, budget, mobility, food restrictions and expressed interests.
+
+#### Scenario: Independent categories can search at the same time
+- **WHEN** the group requests hotel, restaurant and sightseeing suggestions
+- **THEN** the initial searches can run concurrently, sharing the initial search and model output allowances. Results are presented in hotel, restaurant, sightseeing order regardless of completion order. A booked stay or day trip excludes the hotel request.
+- **AND** a failed category leaves usable sibling results available. A supplementary search can fill the remaining gaps after validating the first results. Canceling the operation cancels its outstanding work. Searching for more choices affects only the active question.
 
 #### Scenario: Too few matching places
 - **WHEN** a relevant question starts with fewer than four unique options or is missing

@@ -214,7 +214,9 @@ export async function model(task, data, context = {}) {
   const effortKey =
     operation === 'replan' ? 'REPLAN' : operation === 'repair' ? 'REPAIR' : quick ? 'PLACE' : 'PLAN';
   const effort = env['BOP_EFFORT_' + effortKey]?.trim() || (operation === 'replan' ? 'medium' : 'low');
-  const tokens = operation === 'design' ? 32000 : quick ? 8000 : 16000;
+  const outputLimit = operation === 'design' ? 32000 : quick ? 8000 : 16000;
+  const tokens = Number.isInteger(context.maxOutputTokens) && context.maxOutputTokens > 0
+    ? Math.min(outputLimit, context.maxOutputTokens) : outputLimit;
   const destination = context.location ?? data.setup ?? data;
   const location = {
     type: 'approximate',

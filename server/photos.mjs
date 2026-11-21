@@ -76,13 +76,17 @@ export function containsName(text, stop) {
     );
   });
 }
+function htmlAttributes(tag) {
+  const attributes = {};
+  for (const match of tag.matchAll(/\s([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g)) {
+    attributes[match[1].toLowerCase()] = decode(match[2] ?? match[3] ?? match[4]);
+  }
+  return attributes;
+}
 function tags(head) {
   const meta = new Map();
   for (const tag of head.matchAll(/<meta\b(?:"[^"]*"|'[^']*'|[^>'"])*>/gi)) {
-    const attributes = {};
-    for (const match of tag[0].matchAll(/\s([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g)) {
-      attributes[match[1].toLowerCase()] = decode(match[2] ?? match[3] ?? match[4]);
-    }
+    const attributes = htmlAttributes(tag[0]);
     const key = (attributes.property || attributes.name || '').toLowerCase();
     if (key && !meta.has(key)) meta.set(key, attributes.content || '');
   }
@@ -127,6 +131,45 @@ export function previewFromHead(head, page, stop) {
     source: 'web',
     match: 'likely',
   };
+}
+function hotelImageUrl(raw, page) {
+  if (!raw || typeof raw !== 'string') return '';
+  try {
+    const url = publicPage(new URL(raw, page).href);
+    const asset = decodeURIComponent(url);
+    if (url && rasterPreview(asset) &&
+        !/(?:[/_.-])(?:og[-_]?image|social[-_]?(?:card|share)|facebook-twitter)(?:[./?&_-]|$)/i.test(asset)) return url;
+  } catch { /* Ignore unusable media entries. */ }
+  return '';
+}
+// A directory can describe several hotels. Use structured facts and images only from the named property.
+export function hotelPageDetails(html, page, identity) {
+  page = publicPage(page);
+  if (!page) return {};
+  let property;
+  for (const script of html.matchAll(/<script\b[^>]*\btype\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script\s*>/gi)) {
+    try {
+      const roots = [JSON.parse(script[1])].flat();
+      const entities = roots.flatMap(root => [root, root?.['@graph'] ?? [], root?.mainEntity ?? []].flat());
+      property = entities.find(node => [node?.['@type']].flat().some(type => /(?:^|\/)(?:Hotel|Hostel|Resort|Motel|LodgingBusiness|BedAndBreakfast)$/i.test(type)) &&
+        containsName(node.name, identity));
+      if (property) break;
+    } catch { /* Another script can contain a usable property. */ }
+  }
+  const images = [];
+  for (const tag of html.matchAll(/<img\b(?:"[^"]*"|'[^']*'|[^>'"])*>/gi)) {
+    const attrs = htmlAttributes(tag[0]);
+    if (containsName(attrs.alt, identity)) images.push(attrs['data-src'], attrs.src);
+  }
+  for (const item of [property?.image].flat()) images.push(typeof item === 'string' ? item : item?.contentUrl || item?.url);
+  const head = html.split(/<\/head\s*>/i, 1)[0];
+  const fallback = previewFromHead(head, page, identity);
+  images.push(fallback?.url);
+  const url = images.map(raw => hotelImageUrl(raw, page)).find(Boolean);
+  const photo = url && { url, page, match:'likely', source:'web', credit:placeText(tags(head).get('og:site_name')) || new URL(page).hostname };
+  const geo = property?.geo;
+  const ll = geo?.latitude != null && geo.longitude != null ? [Number(geo.latitude), Number(geo.longitude)] : null;
+  return { named: Boolean(property), ...(coordinates(ll) && {ll}), ...(photo && {photo}) };
 }
 // A restaurant menu and its preview can consume the same response during one lookup.
 const fullDocuments = new WeakMap();
@@ -210,8 +253,10 @@ async function fetchDocument(value, signal, { headOnly = true, limit = 300_000, 
 }
 
 export async function pagePhoto(value, stop, signal) {
-  const document = await readPublicDocument(value, signal);
-  return document ? previewFromHead(document.text, document.page, stop) : null;
+  const hotel = (stop.kind || stop.k) === 'hotel';
+  const document = await readPublicDocument(value, signal, {headOnly: !hotel});
+  if (!document) return null;
+  return hotel ? hotelPageDetails(document.text, document.page, stop).photo || null : previewFromHead(document.text, document.page, stop);
 }
 
 let nextStart = 0,
